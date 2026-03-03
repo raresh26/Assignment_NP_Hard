@@ -37,7 +37,7 @@ public class SudokuTest {
             int end = params[2];
             int step = params[3];
             for (int diff = start; diff <= end; diff += step) {
-                files.add(Arguments.of("instances/sudoku/size_" + size + "_diff_" + diff + ".txt"));
+                files.add(Arguments.of("./Assignment2Template/instances/sudoku/size_" + size + "_diff_" + diff + ".txt"));
             }
         }
 

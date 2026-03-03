@@ -199,17 +199,17 @@ class Solver {
     private Variable[] variables;
     private List<int[]> foundSolutions;
 
-    private int[] assignment;
-    private boolean[] assigned;
+    private int[] assignment; //assignment[i] stores the value currently assigned to i-th variable
+    private boolean[] assigned; //assigned[i] is true if i-th variable is assigned, false otherwise
     private IdentityHashMap<Variable, Integer> variableToIndex;
-    private List<IncidentRef>[] incident;
-    private IdentityHashMap<Constraint, CompiledConstraint> compiledByOriginal;
+    private List<IncidentRef>[] incidents; //incident[i] contains all constraints involving i-th variable
+    private IdentityHashMap<Constraint, CompiledConstraint> basicToCompiledConstr;
     private boolean findAllMode;
     private int maxInitialDomainSize;
     private boolean hasAllDiffConstraint;
 
-    private int[] domainMin;
-    private int[] domainMax;
+    private int[] domainMin; //array storing the min value of each variable
+    private int[] domainMax; //array storing the max value of each variable
 
     /**
      * Constructs a Solver using a list of variables and constraints.
@@ -248,13 +248,156 @@ class Solver {
             }
         }
 
-        this.incident = new ArrayList[n];
+        this.incidents = new ArrayList[n];
         for (int i = 0; i < n; i++) {
-            incident[i] = new ArrayList<>();
+            incidents[i] = new ArrayList<>();
         }
 
-        this.compiledByOriginal = new IdentityHashMap<>();
+        this.basicToCompiledConstr = new IdentityHashMap<>();
         buildCompiledConstraints();
+    }
+
+    /**
+     * Compiles the constraints into an optimized internal representation suitable for use
+     * during the solving process. Constraints are transformed into `CompiledConstraint`
+     * objects, which store the necessary information for efficiently managing and
+     * propagating constraints.
+     *
+     * The method processes different types of constraints as follows:
+     *
+     * 1. **NotEqConstraint**:
+     *    - Converts inequality constraints (x1 != x2 + c) into a `CompiledConstraint` of type `TYPE_NOTEQ`.
+     *    - Maps involved variables to their internal indices.
+     *    - Updates incident information for participating variables.
+     *
+     * 2. **AllDiffConstraint**:
+     *    - Processes "all different" constraints and converts them into a `CompiledConstraint` of type `TYPE_ALLDIFF`.
+     *    - Maps all participating variables to their internal indices and computes the value range.
+     *    - Allocates an efficient storage (array or hashmap) based on the computed range.
+     *    - Updates incident information for all involved variables.
+     *
+     * 3. **IneqConstraint**:
+     *    - Handles inequality constraints and converts them into a `CompiledConstraint` of type `TYPE_INEQ`.
+     *    - Maps all participating variables to their internal indices and records associated weights.
+     *    - Computes additional attributes such as the best contributions, current sum, and maximum remaining value.
+     *    - Updates incident information for all involved variables.
+     *
+     * These compiled constraints are stored in the `basicToCompiledConstr` map for later use
+     * during the solving process. The method ensures efficient representation and quick access
+     * to constraint data, optimizing subsequent computations.
+     */
+    private void buildCompiledConstraints() {
+        for (Constraint c : constraints) {
+            if (c instanceof NotEqConstraint) {
+                NotEqConstraint nc = (NotEqConstraint) c;
+                CompiledConstraint cc = new CompiledConstraint();
+                cc.type = TYPE_NOTEQ;
+                cc.x1 = variableIndex(nc.x1);
+                cc.x2 = variableIndex(nc.x2);
+                cc.c = nc.c;
+                basicToCompiledConstr.put(c, cc);
+                addIncident(cc.x1, cc, -1);
+                addIncident(cc.x2, cc, -1);
+            }else if (c instanceof AllDiffConstraint) {
+                AllDiffConstraint ac = (AllDiffConstraint) c;
+                CompiledConstraint cc = new CompiledConstraint();
+                cc.type = TYPE_ALLDIFF;
+                cc.vars = new int[ac.xs.length];
+
+                int minValue = Integer.MAX_VALUE;
+                int maxValue = Integer.MIN_VALUE;
+                for (int i = 0; i < ac.xs.length; i++) {
+                    int varIndex = variableIndex(ac.xs[i]);
+                    cc.vars[i] = varIndex;
+                    if (domainMin[varIndex] < minValue) {
+                        minValue = domainMin[varIndex];
+                    }
+                    if (domainMax[varIndex] > maxValue) {
+                        maxValue = domainMax[varIndex];
+                    }
+                }
+
+                long range = (long) maxValue - (long) minValue + 1L;
+                if (range > 0 && range <= 4096) {
+                    cc.offset = minValue;
+                    cc.countsArray = new int[(int) range];
+                } else {
+                    cc.countsMap = new HashMap<>();
+                }
+
+                basicToCompiledConstr.put(c, cc);
+                for (int i = 0; i < cc.vars.length; i++) {
+                    addIncident(cc.vars[i], cc, i);
+                }
+            }else if (c instanceof IneqConstraint) {
+                IneqConstraint ic = (IneqConstraint) c;
+                CompiledConstraint cc = new CompiledConstraint();
+                cc.type = TYPE_INEQ;
+                cc.vars = new int[ic.xs.length];
+                cc.ws = Arrays.copyOf(ic.ws, ic.ws.length);
+                cc.rhs = ic.c;
+                cc.bestContrib = new long[ic.xs.length];
+                cc.currentSum = 0;
+                cc.maxRemaining = 0;
+
+                for (int i = 0; i < ic.xs.length; i++) {
+                    int varIndex = variableIndex(ic.xs[i]);
+                    cc.vars[i] = varIndex;
+                    int w = cc.ws[i];
+                    long best = 0;
+                    if (w > 0) {
+                        best = (long) w * domainMax[varIndex];
+                    } else if (w < 0) {
+                        best = (long) w * domainMin[varIndex];
+                    }
+                    cc.bestContrib[i] = best;
+                    cc.maxRemaining += best;
+                }
+
+                basicToCompiledConstr.put(c, cc);
+                for (int i = 0; i < cc.vars.length; i++) {
+                    addIncident(cc.vars[i], cc, i);
+                }
+            }
+        }
+    }
+
+    private void addIncident(int varIndex, CompiledConstraint constraint, int position) {
+        incidents[varIndex].add(new IncidentRef(constraint, position));
+    }
+
+    private int variableIndex(Variable v) {
+        Integer idx = variableToIndex.get(v);
+        if (idx == null) {
+            throw new IllegalArgumentException("Constraint references unknown variable.");
+        }
+        return idx;
+    }
+
+    private int domainMin(Variable v) {
+        if (v.domain.isEmpty()) {
+            throw new IllegalArgumentException("Variable domain cannot be empty.");
+        }
+        int min = v.domain.get(0);
+        for (int value : v.domain) {
+            if (value < min) {
+                min = value;
+            }
+        }
+        return min;
+    }
+
+    private int domainMax(Variable v) {
+        if (v.domain.isEmpty()) {
+            throw new IllegalArgumentException("Variable domain cannot be empty.");
+        }
+        int max = v.domain.get(0);
+        for (int value : v.domain) {
+            if (value > max) {
+                max = value;
+            }
+        }
+        return max;
     }
 
     /**
@@ -305,6 +448,13 @@ class Solver {
         backtrack(findAll);
     }
 
+    /**
+     * Performs a backtracking search to find solutions for the given constraint satisfaction problem.
+     * The method recursively assigns values to variables, checks for constraint violations, and backtracks if necessary.
+     *
+     * @param findAll Specifies whether to find all solutions (`true`) or stop after finding the first valid solution (`false`).
+     * @return `true` if at least one solution is found, `false` otherwise.
+     */
     private boolean backtrack(boolean findAll) {
         int varIndex = selectUnassignedVariable();
         if (varIndex == -1) {
@@ -332,11 +482,28 @@ class Solver {
         return false;
     }
 
+    /**
+     * Selects the next unassigned variable to process during a constraint satisfaction problem-solving process.
+     * The method uses heuristics to prioritize variables based on their current state and constraints,
+     * aiming to optimize the search process. Depending on the problem's setup, it utilizes either
+     * "legal lookahead" or simpler selection strategies.
+     *
+     * The "legal lookahead" heuristic selects the variable with the fewest legal values remaining
+     * (also known as the Minimum Remaining Values or MRV heuristic). In case of a tie, it selects
+     * the variable with the highest degree (number of constraints incident to the variable) to further
+     * reduce the branching factor in subsequent steps.
+     *
+     * For non-"legal lookahead" selections, the method may prioritize unassigned variables in order
+     * of appearance or based on domain size and degree, depending on whether all solutions need to
+     * be found or only one is required.
+     *
+     * @return The index of the selected unassigned variable, or -1 if no variables remain unassigned.
+     */
     private int selectUnassignedVariable() {
         boolean useLegalLookahead =
-                hasAllDiffConstraint
-                        && (variables.length >= 40
-                        || (!findAllMode && maxInitialDomainSize <= 20));
+            hasAllDiffConstraint
+                && (variables.length >= 40
+                || (!findAllMode && maxInitialDomainSize <= 20));
 
         if (useLegalLookahead) {
             int best = -1;
@@ -348,7 +515,7 @@ class Solver {
                     continue;
                 }
 
-                int degree = incident[i].size();
+                int degree = incidents[i].size();
                 int legalCount = countLegalValues(i, bestLegalCount);
 
                 if (legalCount == 0) {
@@ -386,7 +553,7 @@ class Solver {
             }
 
             int domainSize = variables[i].domain.size();
-            int degree = incident[i].size();
+            int degree = incidents[i].size();
 
             if (domainSize < bestDomainSize || (domainSize == bestDomainSize && degree > bestDegree)) {
                 best = i;
@@ -401,6 +568,16 @@ class Solver {
         return best;
     }
 
+    /**
+     * Counts the number of legal values from the domain of the specified variable that can be assigned
+     * without violating any constraints. The counting process stops early if the number of legal values
+     * reaches or exceeds the specified cutoff.
+     *
+     * @param varIndex The index of the variable whose domain is checked for legal values.
+     * @param cutoff The threshold for the number of legal values to count. If this threshold is met,
+     *               the counting will terminate early.
+     * @return The number of legal values in the variable's domain, up to the cutoff limit.
+     */
     private int countLegalValues(int varIndex, int cutoff) {
         int legal = 0;
         for (int value : variables[varIndex].domain) {
@@ -415,11 +592,21 @@ class Solver {
         return legal;
     }
 
+    /**
+     * Assigns a value to a variable and checks if the assignment violates any constraints.
+     * If a violation is detected, the assignment is undone, and the method returns false.
+     * The method ensures constraints are updated during the assignment and rollback phases.
+     *
+     * @param varIndex The index of the variable to assign the value to.
+     * @param value The value to assign to the variable.
+     * @return {@code true} if the assignment does not violate any constraints;
+     *         {@code false} otherwise.
+     */
     private boolean assignAndCheck(int varIndex, int value) {
         assignment[varIndex] = value;
         assigned[varIndex] = true;
 
-        List<IncidentRef> refs = incident[varIndex];
+        List<IncidentRef> refs = incidents[varIndex];
         for (int i = 0; i < refs.size(); i++) {
             IncidentRef ref = refs.get(i);
             ref.constraint.onAssign(ref.position, value);
@@ -437,148 +624,11 @@ class Solver {
     }
 
     private void unassign(int varIndex, int value) {
-        List<IncidentRef> refs = incident[varIndex];
+        List<IncidentRef> refs = incidents[varIndex];
         for (IncidentRef ref : refs) {
             ref.constraint.onUnassign(ref.position, value);
         }
         assigned[varIndex] = false;
-    }
-
-    private boolean isConsistentAfterAssign(int varIndex) {
-        for (IncidentRef ref : incident[varIndex]) {
-            if (ref.constraint.isViolated(assignment, assigned)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean violates(Constraint c) {
-        CompiledConstraint compiled = compiledByOriginal.get(c);
-        if (compiled == null) {
-            return false;
-        }
-        return compiled.isViolated(assignment, assigned);
-    }
-
-    private void buildCompiledConstraints() {
-        for (Constraint c : constraints) {
-            if (c instanceof NotEqConstraint) {
-                NotEqConstraint nc = (NotEqConstraint) c;
-                CompiledConstraint cc = new CompiledConstraint();
-                cc.type = TYPE_NOTEQ;
-                cc.x1 = variableIndex(nc.x1);
-                cc.x2 = variableIndex(nc.x2);
-                cc.c = nc.c;
-                compiledByOriginal.put(c, cc);
-                addIncident(cc.x1, cc, -1);
-                addIncident(cc.x2, cc, -1);
-                continue;
-            }
-
-            if (c instanceof AllDiffConstraint) {
-                AllDiffConstraint ac = (AllDiffConstraint) c;
-                CompiledConstraint cc = new CompiledConstraint();
-                cc.type = TYPE_ALLDIFF;
-                cc.vars = new int[ac.xs.length];
-
-                int minValue = Integer.MAX_VALUE;
-                int maxValue = Integer.MIN_VALUE;
-                for (int i = 0; i < ac.xs.length; i++) {
-                    int varIndex = variableIndex(ac.xs[i]);
-                    cc.vars[i] = varIndex;
-                    if (domainMin[varIndex] < minValue) {
-                        minValue = domainMin[varIndex];
-                    }
-                    if (domainMax[varIndex] > maxValue) {
-                        maxValue = domainMax[varIndex];
-                    }
-                }
-
-                long range = (long) maxValue - (long) minValue + 1L;
-                if (range > 0 && range <= 4096) {
-                    cc.offset = minValue;
-                    cc.countsArray = new int[(int) range];
-                } else {
-                    cc.countsMap = new HashMap<>();
-                }
-
-                compiledByOriginal.put(c, cc);
-                for (int i = 0; i < cc.vars.length; i++) {
-                    addIncident(cc.vars[i], cc, i);
-                }
-                continue;
-            }
-
-            if (c instanceof IneqConstraint) {
-                IneqConstraint ic = (IneqConstraint) c;
-                CompiledConstraint cc = new CompiledConstraint();
-                cc.type = TYPE_INEQ;
-                cc.vars = new int[ic.xs.length];
-                cc.ws = Arrays.copyOf(ic.ws, ic.ws.length);
-                cc.rhs = ic.c;
-                cc.bestContrib = new long[ic.xs.length];
-                cc.currentSum = 0;
-                cc.maxRemaining = 0;
-
-                for (int i = 0; i < ic.xs.length; i++) {
-                    int varIndex = variableIndex(ic.xs[i]);
-                    cc.vars[i] = varIndex;
-                    int w = cc.ws[i];
-                    long best = 0;
-                    if (w > 0) {
-                        best = (long) w * domainMax[varIndex];
-                    } else if (w < 0) {
-                        best = (long) w * domainMin[varIndex];
-                    }
-                    cc.bestContrib[i] = best;
-                    cc.maxRemaining += best;
-                }
-
-                compiledByOriginal.put(c, cc);
-                for (int i = 0; i < cc.vars.length; i++) {
-                    addIncident(cc.vars[i], cc, i);
-                }
-            }
-        }
-    }
-
-    private void addIncident(int varIndex, CompiledConstraint constraint, int position) {
-        incident[varIndex].add(new IncidentRef(constraint, position));
-    }
-
-    private int variableIndex(Variable v) {
-        Integer idx = variableToIndex.get(v);
-        if (idx == null) {
-            throw new IllegalArgumentException("Constraint references unknown variable.");
-        }
-        return idx;
-    }
-
-    private int domainMin(Variable v) {
-        if (v.domain.isEmpty()) {
-            throw new IllegalArgumentException("Variable domain cannot be empty.");
-        }
-        int min = v.domain.get(0);
-        for (int value : v.domain) {
-            if (value < min) {
-                min = value;
-            }
-        }
-        return min;
-    }
-
-    private int domainMax(Variable v) {
-        if (v.domain.isEmpty()) {
-            throw new IllegalArgumentException("Variable domain cannot be empty.");
-        }
-        int max = v.domain.get(0);
-        for (int value : v.domain) {
-            if (value > max) {
-                max = value;
-            }
-        }
-        return max;
     }
 
 }
