@@ -66,7 +66,7 @@ public class ProductionTest {
             int n = data[1];
             int numInstances = data[2];
             for (int nr = 1; nr <= numInstances; nr++)
-                files.add(Arguments.of("instances/production/m_" + m + "_n_" + n + "_nr_" + nr + ".txt"));
+                files.add(Arguments.of("./Assignment2Template/instances/production/m_" + m + "_n_" + n + "_nr_" + nr + ".txt"));
         }
 
         return files.stream();
