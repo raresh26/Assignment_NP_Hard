@@ -1,0 +1,33 @@
+# Compiled class files
+*.class
+
+# Log files
+*.log
+
+# Package Files #
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Virtual machines crash logs
+hs_err_pid*
+
+# Build tool folders
+/target/
+/out/
+/.gradle/
+/build/
+
+# IntelliJ IDEA internal files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS generated files
+.DS_Store
+Thumbs.db
