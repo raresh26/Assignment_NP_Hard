@@ -14,7 +14,6 @@ import java.util.*;
 class Solver {
     static class Variable {
         public List<Integer> domain;
-        // TODO: Add any fields you want here...
 
         /**
          * Constructs a Variable with a specified domain.
@@ -26,22 +25,16 @@ class Solver {
         public Variable(List<Integer> domain) {
             // Variable initialization
             this.domain = new ArrayList<>(domain);
-
-            // TODO: Add any more logic you want here...
         }
-
-        // TODO: Add any methods you want here...
     }
 
     static abstract class Constraint {
-        // TODO: Add any methods you want here...
     }
 
     static class NotEqConstraint extends Constraint {
         private Variable x1;
         private Variable x2;
         private int c;
-        // TODO: Add any fields you want here...
 
         /**
          * Constructs a NotEqConstraint:
@@ -58,16 +51,11 @@ class Solver {
             this.x1 = x1;
             this.x2 = x2;
             this.c = c;
-
-            // TODO: Add any more logic you want here...
         }
-
-        // TODO: Add any methods you want here...
     }
 
     static class AllDiffConstraint extends Constraint {
         private Variable[] xs;
-        // TODO: Add any fields you want here...
 
         /**
          * Constructs an AllDiffConstraint:
@@ -80,18 +68,13 @@ class Solver {
         public AllDiffConstraint(Variable[] xs) {
             // Variable initialization
             this.xs = xs;
-
-            // TODO: Add any more logic you want here...
         }
-
-        // TODO: Add any methods you want here...
     }
 
     static class IneqConstraint extends Constraint {
         private Variable[] xs;
         private int[] ws;
         private int c;
-        // TODO: Add any fields you want here...
 
         /**
          * Constructs an IneqConstraint:
@@ -108,17 +91,17 @@ class Solver {
             this.xs = xs;
             this.ws = ws;
             this.c = c;
-
-            // TODO: Add any more logic you want here...
         }
-
-        // TODO: Add any methods you want here...
     }
 
     private Constraint[] constraints;
     private Variable[] variables;
     private List<int[]> foundSolutions;
-    // TODO: Add any fields you want here...
+    private Integer[] assignment;
+    private IdentityHashMap<Variable, Integer> variableToIndex;
+    private List<Constraint>[] incident;
+    private int[] domainMin;
+    private int[] domainMax;
 
     /**
      * Constructs a Solver using a list of variables and constraints.
@@ -129,9 +112,26 @@ class Solver {
         // Initialize variables
         this.variables = variables;
         this.constraints = constraints;
-        this.foundSolutions = new LinkedList<>();
+        this.foundSolutions = new ArrayList<>();
+        this.assignment = new Integer[variables.length];
+        this.variableToIndex = new IdentityHashMap<>();
 
-        // TODO: Add any more logic you want here...
+        for (int i = 0; i < variables.length; i++) {
+            variableToIndex.put(variables[i], i);
+        }
+
+        domainMin = new int[variables.length];
+        domainMax = new int[variables.length];
+        for (int i = 0; i < variables.length; i++) {
+            domainMin[i] = domainMin(variables[i]);
+            domainMax[i] = domainMax(variables[i]);
+        }
+
+        incident = new ArrayList[variables.length];
+        for (int i = 0; i < variables.length; i++) {
+            incident[i] = new ArrayList<>();
+        }
+        buildIncidentConstraints();
     }
 
     /**
@@ -182,13 +182,158 @@ class Solver {
      *                    only one needs to be found.
      */
     private void solve(boolean findAll) {
-        // TODO: Do search and inference on the variables and constraints to find solutions
+        Arrays.fill(assignment, null);
+        backtrack(findAll);
     }
 
-    // You are free to add any helper methods you might want to use within
-    //     the solver. Note, however, that you would not be allowed to call
-    //     them directly from within the `solveProblem`-method, since you
-    //     must copy your `solveProblem`-code from Part 1, which wouldn't
-    //     have these helper methods defined.
+    private boolean backtrack(boolean findAll) {
+        int varIndex = selectUnassignedVariable();
+        if (varIndex == -1) {
+            int[] solution = new int[variables.length];
+            for (int i = 0; i < variables.length; i++) {
+                solution[i] = assignment[i];
+            }
+            foundSolutions.add(solution);
+            return true;
+        }
+
+        for (int value : variables[varIndex].domain) {
+            assignment[varIndex] = value;
+            if (isConsistentAfterAssign(varIndex)) {
+                boolean found = backtrack(findAll);
+                if (found && !findAll) {
+                    assignment[varIndex] = null;
+                    return true;
+                }
+            }
+            assignment[varIndex] = null;
+        }
+        return false;
+    }
+
+    private int selectUnassignedVariable() {
+        for (int i = 0; i < assignment.length; i++) {
+            if (assignment[i] == null) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private boolean isConsistentAfterAssign(int varIndex) {
+        for (Constraint c : incident[varIndex]) {
+            if (violates(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean violates(Constraint c) {
+        if (c instanceof NotEqConstraint) {
+            NotEqConstraint nc = (NotEqConstraint) c;
+            Integer i1 = variableToIndex.get(nc.x1);
+            Integer i2 = variableToIndex.get(nc.x2);
+            Integer v1 = assignment[i1];
+            Integer v2 = assignment[i2];
+            if (v1 == null || v2 == null) {
+                return false;
+            }
+            return v1 == v2 + nc.c;
+        }
+
+        if (c instanceof AllDiffConstraint) {
+            AllDiffConstraint ac = (AllDiffConstraint) c;
+            HashSet<Integer> seen = new HashSet<>();
+            for (Variable x : ac.xs) {
+                int idx = variableToIndex.get(x);
+                Integer value = assignment[idx];
+                if (value == null) {
+                    continue;
+                }
+                if (!seen.add(value)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (c instanceof IneqConstraint) {
+            IneqConstraint ic = (IneqConstraint) c;
+            int currentSum = 0;
+            int maxRemaining = 0;
+
+            for (int i = 0; i < ic.xs.length; i++) {
+                int idx = variableToIndex.get(ic.xs[i]);
+                int w = ic.ws[i];
+                Integer value = assignment[idx];
+                if (value != null) {
+                    currentSum += w * value;
+                } else if (w > 0) {
+                    maxRemaining += w * domainMax[idx];
+                } else if (w < 0) {
+                    maxRemaining += w * domainMin[idx];
+                }
+            }
+
+            return currentSum + maxRemaining < ic.c;
+        }
+
+        return false;
+    }
+
+    private void buildIncidentConstraints() {
+        for (Constraint c : constraints) {
+            if (c instanceof NotEqConstraint) {
+                NotEqConstraint nc = (NotEqConstraint) c;
+                addIncident(nc.x1, c);
+                addIncident(nc.x2, c);
+            } else if (c instanceof AllDiffConstraint) {
+                AllDiffConstraint ac = (AllDiffConstraint) c;
+                for (Variable x : ac.xs) {
+                    addIncident(x, c);
+                }
+            } else if (c instanceof IneqConstraint) {
+                IneqConstraint ic = (IneqConstraint) c;
+                for (Variable x : ic.xs) {
+                    addIncident(x, c);
+                }
+            }
+        }
+    }
+
+    private void addIncident(Variable v, Constraint c) {
+        Integer idx = variableToIndex.get(v);
+        if (idx == null) {
+            throw new IllegalArgumentException("Constraint references unknown variable.");
+        }
+        incident[idx].add(c);
+    }
+
+    private int domainMin(Variable v) {
+        if (v.domain.isEmpty()) {
+            throw new IllegalArgumentException("Variable domain cannot be empty.");
+        }
+        int min = v.domain.get(0);
+        for (int x : v.domain) {
+            if (x < min) {
+                min = x;
+            }
+        }
+        return min;
+    }
+
+    private int domainMax(Variable v) {
+        if (v.domain.isEmpty()) {
+            throw new IllegalArgumentException("Variable domain cannot be empty.");
+        }
+        int max = v.domain.get(0);
+        for (int x : v.domain) {
+            if (x > max) {
+                max = x;
+            }
+        }
+        return max;
+    }
 
 }
