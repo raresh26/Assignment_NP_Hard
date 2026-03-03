@@ -113,10 +113,10 @@ class Solver {
 
         // Ineq state
         int[] ws;
-        int rhs;
-        int currentSum;
-        int maxRemaining;
-        int[] bestContrib;
+        long rhs;
+        long currentSum;
+        long maxRemaining;
+        long[] bestContrib;
 
         void onAssign(int pos, int value) {
             if (type == TYPE_ALLDIFF) {
@@ -137,7 +137,7 @@ class Solver {
             }
 
             if (type == TYPE_INEQ) {
-                currentSum += ws[pos] * value;
+                currentSum += (long) ws[pos] * value;
                 maxRemaining -= bestContrib[pos];
             }
         }
@@ -166,16 +166,14 @@ class Solver {
             }
 
             if (type == TYPE_INEQ) {
-                currentSum -= ws[pos] * value;
+                currentSum -= (long) ws[pos] * value;
                 maxRemaining += bestContrib[pos];
             }
         }
 
-        boolean isViolated(Integer[] assignment) {
+        boolean isViolated(int[] assignment, boolean[] assigned) {
             if (type == TYPE_NOTEQ) {
-                Integer v1 = assignment[x1];
-                Integer v2 = assignment[x2];
-                return v1 != null && v2 != null && v1 == v2 + c;
+                return assigned[x1] && assigned[x2] && assignment[x1] == assignment[x2] + c;
             }
             if (type == TYPE_ALLDIFF) {
                 return duplicateValueCount > 0;
@@ -201,11 +199,14 @@ class Solver {
     private Variable[] variables;
     private List<int[]> foundSolutions;
 
-    private Integer[] assignment;
+    private int[] assignment;
+    private boolean[] assigned;
     private IdentityHashMap<Variable, Integer> variableToIndex;
     private List<IncidentRef>[] incident;
     private IdentityHashMap<Constraint, CompiledConstraint> compiledByOriginal;
     private boolean findAllMode;
+    private int maxInitialDomainSize;
+    private boolean hasAllDiffConstraint;
 
     private int[] domainMin;
     private int[] domainMax;
@@ -220,9 +221,17 @@ class Solver {
         this.variables = variables;
         this.constraints = constraints;
         this.foundSolutions = new ArrayList<>();
+        this.hasAllDiffConstraint = false;
+        for (Constraint c : constraints) {
+            if (c instanceof AllDiffConstraint) {
+                hasAllDiffConstraint = true;
+                break;
+            }
+        }
 
         int n = variables.length;
-        this.assignment = new Integer[n];
+        this.assignment = new int[n];
+        this.assigned = new boolean[n];
         this.variableToIndex = new IdentityHashMap<>();
         for (int i = 0; i < n; i++) {
             variableToIndex.put(variables[i], i);
@@ -230,9 +239,13 @@ class Solver {
 
         this.domainMin = new int[n];
         this.domainMax = new int[n];
+        this.maxInitialDomainSize = 0;
         for (int i = 0; i < n; i++) {
             domainMin[i] = domainMin(variables[i]);
             domainMax[i] = domainMax(variables[i]);
+            if (variables[i].domain.size() > maxInitialDomainSize) {
+                maxInitialDomainSize = variables[i].domain.size();
+            }
         }
 
         this.incident = new ArrayList[n];
@@ -269,7 +282,7 @@ class Solver {
      *     However, you are allowed to change its behavior in any way you want.
      *
      * @return A list of integer arrays, each representing a different
-     solution to the problem (same format as findOneSolution).
+    solution to the problem (same format as findOneSolution).
      */
     public List<int[]> findAllSolutions() {
         foundSolutions.clear();
@@ -288,7 +301,7 @@ class Solver {
      */
     private void solve(boolean findAll) {
         findAllMode = findAll;
-        Arrays.fill(assignment, null);
+        Arrays.fill(assigned, false);
         backtrack(findAll);
     }
 
@@ -320,13 +333,18 @@ class Solver {
     }
 
     private int selectUnassignedVariable() {
-        if (!findAllMode || variables.length >= 40) {
+        boolean useLegalLookahead =
+                hasAllDiffConstraint
+                        && (variables.length >= 40
+                        || (!findAllMode && maxInitialDomainSize <= 20));
+
+        if (useLegalLookahead) {
             int best = -1;
             int bestLegalCount = Integer.MAX_VALUE;
             int bestDegree = -1;
 
             for (int i = 0; i < assignment.length; i++) {
-                if (assignment[i] != null) {
+                if (assigned[i]) {
                     continue;
                 }
 
@@ -349,12 +367,21 @@ class Solver {
             return best;
         }
 
+        if (!findAllMode) {
+            for (int i = 0; i < assignment.length; i++) {
+                if (!assigned[i]) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
         int best = -1;
         int bestDomainSize = Integer.MAX_VALUE;
         int bestDegree = -1;
 
         for (int i = 0; i < assignment.length; i++) {
-            if (assignment[i] != null) {
+            if (assigned[i]) {
                 continue;
             }
 
@@ -390,17 +417,18 @@ class Solver {
 
     private boolean assignAndCheck(int varIndex, int value) {
         assignment[varIndex] = value;
+        assigned[varIndex] = true;
 
         List<IncidentRef> refs = incident[varIndex];
         for (int i = 0; i < refs.size(); i++) {
             IncidentRef ref = refs.get(i);
             ref.constraint.onAssign(ref.position, value);
-            if (ref.constraint.isViolated(assignment)) {
+            if (ref.constraint.isViolated(assignment, assigned)) {
                 for (int j = 0; j <= i; j++) {
                     IncidentRef undoRef = refs.get(j);
                     undoRef.constraint.onUnassign(undoRef.position, value);
                 }
-                assignment[varIndex] = null;
+                assigned[varIndex] = false;
                 return false;
             }
         }
@@ -413,12 +441,12 @@ class Solver {
         for (IncidentRef ref : refs) {
             ref.constraint.onUnassign(ref.position, value);
         }
-        assignment[varIndex] = null;
+        assigned[varIndex] = false;
     }
 
     private boolean isConsistentAfterAssign(int varIndex) {
         for (IncidentRef ref : incident[varIndex]) {
-            if (ref.constraint.isViolated(assignment)) {
+            if (ref.constraint.isViolated(assignment, assigned)) {
                 return false;
             }
         }
@@ -430,7 +458,7 @@ class Solver {
         if (compiled == null) {
             return false;
         }
-        return compiled.isViolated(assignment);
+        return compiled.isViolated(assignment, assigned);
     }
 
     private void buildCompiledConstraints() {
@@ -489,7 +517,7 @@ class Solver {
                 cc.vars = new int[ic.xs.length];
                 cc.ws = Arrays.copyOf(ic.ws, ic.ws.length);
                 cc.rhs = ic.c;
-                cc.bestContrib = new int[ic.xs.length];
+                cc.bestContrib = new long[ic.xs.length];
                 cc.currentSum = 0;
                 cc.maxRemaining = 0;
 
@@ -497,11 +525,11 @@ class Solver {
                     int varIndex = variableIndex(ic.xs[i]);
                     cc.vars[i] = varIndex;
                     int w = cc.ws[i];
-                    int best = 0;
+                    long best = 0;
                     if (w > 0) {
-                        best = w * domainMax[varIndex];
+                        best = (long) w * domainMax[varIndex];
                     } else if (w < 0) {
-                        best = w * domainMin[varIndex];
+                        best = (long) w * domainMin[varIndex];
                     }
                     cc.bestContrib[i] = best;
                     cc.maxRemaining += best;

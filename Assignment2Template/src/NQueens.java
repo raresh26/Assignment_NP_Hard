@@ -10,54 +10,51 @@ class NQueens {
      * @return The number of valid ways to arrange the queens.
      */
     public static int solveProblem(int n) {
-        // TODO: Copy your code from "N-Queens (Part 1)" here
-        if(n==1) return 1;
-        List<Solver.Variable> variables = new ArrayList<>();
-        // TODO: add your variables
-        //assume each queen is on a different column
-        //so each queen can be considered to take only a "row-position"
-        //each variable represents therow index of a queen
-        for(int i=0;i<n;i++){
-            List<Integer> queen = new ArrayList<>();
-            for(int j=0;j<n;j++){
-                queen.add(j);
+        if (n <= 0) return 0;
+        if (n == 1) return 1;
+        if (n <= 3) return 0;
+
+        List<Integer> firstHalfRows = new ArrayList<>();
+        for (int row = 0; row < n / 2; row++) {
+            firstHalfRows.add(row);
+        }
+
+        int mirroredCount = countSolutionsWithFirstColumnDomain(n, firstHalfRows);
+        int total = mirroredCount * 2;
+
+        if (n % 2 == 1) {
+            total += countSolutionsWithFirstColumnDomain(n, Collections.singletonList(n / 2));
+        }
+
+        return total;
+    }
+
+    private static int countSolutionsWithFirstColumnDomain(int n, List<Integer> firstColumnRows) {
+        List<Solver.Variable> variables = new ArrayList<>(n);
+        for (int col = 0; col < n; col++) {
+            List<Integer> domain = new ArrayList<>();
+            if (col == 0) {
+                domain.addAll(firstColumnRows);
+            } else {
+                for (int row = 0; row < n; row++) {
+                    domain.add(row);
+                }
             }
-            variables.add(new Solver.Variable(queen));
+            variables.add(new Solver.Variable(domain));
         }
 
         List<Solver.Constraint> constraints = new ArrayList<>();
-        // TODO: add your constraints
-        //constraint that each queen is on a different row
-        Solver.Constraint all_diff_rows = new Solver.AllDiffConstraint(
-            variables.toArray(new Solver.Variable[0])
-        );
-        constraints.add(all_diff_rows);
+        Solver.Variable[] vars = variables.toArray(new Solver.Variable[0]);
+        constraints.add(new Solver.AllDiffConstraint(vars));
 
-        for(int i=0;i<n-1;i++){
-            for(int j=i+1;j<n;j++){
-                Solver.Constraint positive_diag = new Solver.NotEqConstraint(
-                    variables.get(i),
-                    variables.get(j),
-                    i-j
-                );
-                Solver.Constraint  negative_diag = new Solver.NotEqConstraint(
-                    variables.get(i),
-                    variables.get(j),
-                    j-i
-                );
-
-                constraints.add(positive_diag);
-                constraints.add(negative_diag);
+        for (int i = 0; i < n - 1; i++) {
+            for (int j = i + 1; j < n; j++) {
+                constraints.add(new Solver.NotEqConstraint(variables.get(i), variables.get(j), i - j));
+                constraints.add(new Solver.NotEqConstraint(variables.get(i), variables.get(j), j - i));
             }
         }
 
-        // Use solver
-        Solver solver = new Solver(
-            variables.toArray(new Solver.Variable[0]),
-            constraints.toArray(new Solver.Constraint[0])
-        );
-        List<int[]> result = solver.findAllSolutions();
-        // TODO: construct solution using result
-        return result.size();
+        Solver solver = new Solver(vars, constraints.toArray(new Solver.Constraint[0]));
+        return solver.findAllSolutions().size();
     }
 }
