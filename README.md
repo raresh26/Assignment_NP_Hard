@@ -1,5 +1,5 @@
 # Assignment 2 Template
-***CSE3300 Algorithms for NP-Hard Problems***
+***CSE3300 Algorithms for NP-Hard Problems G***
 
 This is a template project for Assignment 2, which you can use for local development for *Part 2: Solving*.
 
